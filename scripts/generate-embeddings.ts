@@ -18,14 +18,20 @@ const JINA_API_KEY = process.env.EMBEDDING_API_KEY!;
 const JINA_MODEL = process.env.EMBEDDING_MODEL || 'jina-embeddings-v3';
 const BATCH_SIZE = 50;
 const RATE_LIMIT_MS = 500;
-const MAX_CHARS = 2000; // Truncate to save tokens (most important info is at the start)
+const MAX_CHARS = 1500; // Truncate to save tokens (most important info is at the start)
 
-// Section codes NOT worth embedding (short metadata, not useful for semantic search)
-const SKIP_SECTIONS = new Set([
-  'registration',  // Just a number like "55758"
-  'packaging',     // Package sizes
-  'manufacturer',  // Company name
-  'revision',      // Just a date
+// Only embed these medically relevant section codes
+const EMBED_SECTIONS = new Set([
+  'composition',       // Zusammensetzung / Darreichungsform und Wirkstoffmenge
+  'indications',       // Indikationen
+  'dosage',            // Dosierung/Anwendung
+  'contraindications', // Kontraindikationen
+  'warnings',          // Warnhinweise und Vorsichtsmassnahmen
+  'interactions',      // Interaktionen
+  'side_effects',      // Unerwünschte Wirkungen
+  'pregnancy',         // Schwangerschaft/Stillzeit
+  'overdose',          // Überdosierung
+  'other',             // Sonstige Hinweise (inkl. Lagerung)
 ]);
 
 const DRY_RUN = process.argv.includes('--dry-run');
@@ -104,11 +110,11 @@ async function generateEmbeddings(): Promise<void> {
         codeCounts[code].count++;
         codeCounts[code].tokens += tokens;
 
-        if (SKIP_SECTIONS.has(code)) {
-          sectionsToSkip++;
-        } else {
+        if (EMBED_SECTIONS.has(code)) {
           sectionsToEmbed++;
           totalTokens += tokens;
+        } else {
+          sectionsToSkip++;
         }
       }
 
@@ -119,8 +125,8 @@ async function generateEmbeddings(): Promise<void> {
     console.log('Section breakdown:');
     const sorted = Object.entries(codeCounts).sort((a, b) => b[1].tokens - a[1].tokens);
     for (const [code, info] of sorted) {
-      const skip = SKIP_SECTIONS.has(code) ? ' [SKIP]' : '';
-      console.log(`  ${code}: ${info.count} sections, ~${(info.tokens / 1000).toFixed(0)}k tokens${skip}`);
+      const include = EMBED_SECTIONS.has(code) ? '' : ' [SKIP]';
+      console.log(`  ${code}: ${info.count} sections, ~${(info.tokens / 1000).toFixed(0)}k tokens${include}`);
     }
 
     console.log(`\nSections to embed: ${sectionsToEmbed}`);
@@ -136,8 +142,7 @@ async function generateEmbeddings(): Promise<void> {
     process.exit(1);
   }
 
-  // Build filter: exclude skip sections
-  const skipList = Array.from(SKIP_SECTIONS);
+  const includeList = Array.from(EMBED_SECTIONS);
 
   let totalEmbedded = 0;
   let totalErrors = 0;
@@ -147,16 +152,16 @@ async function generateEmbeddings(): Promise<void> {
     .from('sections')
     .select('*', { count: 'exact', head: true })
     .is('embedding', null)
-    .not('section_code', 'in', `(${skipList.join(',')})`);
+    .in('section_code', includeList);
 
-  console.log(`Sections to embed (excluding ${skipList.join(', ')}): ${embedCount}`);
+  console.log(`Sections to embed (${includeList.length} section types): ${embedCount}`);
 
   while (true) {
     const { data: sections, error } = await supabase
       .from('sections')
       .select('id, section_code, content')
       .is('embedding', null)
-      .not('section_code', 'in', `(${skipList.join(',')})`)
+      .in('section_code', includeList)
       .limit(BATCH_SIZE);
 
     if (error) throw error;
