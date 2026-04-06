@@ -1,5 +1,5 @@
 #!/bin/bash
-# Download import files from Google Drive
+# Download import files from Google Drive using curl
 # Usage: bash scripts/download-from-gdrive.sh
 
 set -e
@@ -7,37 +7,41 @@ set -e
 DATA_DIR="data"
 mkdir -p "$DATA_DIR"
 
-# Install gdown if not present
-if ! command -v gdown &> /dev/null; then
-    echo "Installing gdown..."
-    pip install --quiet gdown
-fi
+download_gdrive() {
+    local FILE_ID="$1"
+    local OUTPUT="$2"
+    local DESC="$3"
 
-# SQLite database (~190 MB)
-SQLITE_ID="1amlZUNbpc8B4kpCo3Hd91qDuyza5olV0"
-SQLITE_FILE="$DATA_DIR/swissmedic_fi_de_sections_v3.db"
+    if [ -f "$OUTPUT" ] && [ "$(stat -c%s "$OUTPUT" 2>/dev/null || stat -f%z "$OUTPUT" 2>/dev/null)" -gt 1000000 ]; then
+        echo "$DESC already exists ($(du -h "$OUTPUT" | cut -f1)), skipping."
+        return
+    fi
 
-if [ -f "$SQLITE_FILE" ] && [ $(stat -c%s "$SQLITE_FILE" 2>/dev/null || stat -f%z "$SQLITE_FILE" 2>/dev/null) -gt 1000000 ]; then
-    echo "swissmedic_fi_de_sections_v3.db already exists, skipping."
-else
-    echo "Downloading swissmedic_fi_de_sections_v3.db (~190 MB)..."
-    rm -f "$SQLITE_FILE"
-    gdown "$SQLITE_ID" -O "$SQLITE_FILE"
-    echo "Done: $(du -h "$SQLITE_FILE" | cut -f1)"
-fi
+    echo "Downloading $DESC..."
+    rm -f "$OUTPUT"
 
-# XML file (~2 GB)
-XML_ID="129FpUXoxjkYQ1JoMnMCJVIt2VRHDzuIx"
-XML_FILE="$DATA_DIR/AipsDownload_20250326.xml"
+    # Google Drive large file download with confirmation bypass
+    curl -L \
+        -o "$OUTPUT" \
+        --progress-bar \
+        -H "User-Agent: Mozilla/5.0" \
+        "https://drive.google.com/uc?export=download&confirm=t&id=${FILE_ID}"
 
-if [ -f "$XML_FILE" ] && [ $(stat -c%s "$XML_FILE" 2>/dev/null || stat -f%z "$XML_FILE" 2>/dev/null) -gt 1000000 ]; then
-    echo "AipsDownload_20250326.xml already exists, skipping."
-else
-    echo "Downloading AipsDownload_20250326.xml (~2 GB)..."
-    rm -f "$XML_FILE"
-    gdown "$XML_ID" -O "$XML_FILE"
-    echo "Done: $(du -h "$XML_FILE" | cut -f1)"
-fi
+    local SIZE=$(du -h "$OUTPUT" | cut -f1)
+    echo "Done: $SIZE"
+}
+
+# SQLite database
+download_gdrive \
+    "1amlZUNbpc8B4kpCo3Hd91qDuyza5olV0" \
+    "$DATA_DIR/swissmedic_fi_de_sections_v3.db" \
+    "swissmedic_fi_de_sections_v3.db (~190 MB)"
+
+# XML file
+download_gdrive \
+    "129FpUXoxjkYQ1JoMnMCJVIt2VRHDzuIx" \
+    "$DATA_DIR/AipsDownload_20250326.xml" \
+    "AipsDownload_20250326.xml (~2 GB)"
 
 echo ""
 echo "All files in ./$DATA_DIR/:"
