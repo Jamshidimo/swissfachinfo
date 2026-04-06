@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "download": "tsx scripts/download-from-gdrive.ts",
     "import:products": "tsx scripts/import-products.ts",
     "import:sections": "tsx scripts/import-sections.ts",
     "import:embeddings": "tsx scripts/generate-embeddings.ts",
