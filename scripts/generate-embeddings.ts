@@ -18,7 +18,7 @@ const JINA_API_KEY = process.env.EMBEDDING_API_KEY!;
 const JINA_MODEL = process.env.EMBEDDING_MODEL || 'jina-embeddings-v3';
 const BATCH_SIZE = 50;
 const RATE_LIMIT_MS = 500;
-const MAX_CHARS = 1500; // Truncate to save tokens (most important info is at the start)
+const MAX_CHARS = 1400; // Truncate to save tokens (~9M for 10M budget)
 
 // Only embed these medically relevant section codes
 const EMBED_SECTIONS = new Set([
