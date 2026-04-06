@@ -15,13 +15,13 @@ async function searchByProduct(params: Record<string, unknown>): Promise<unknown
   const sections = params.sections as string[] | undefined;
   const lang = (params.lang as string) || 'de';
 
-  // Find products matching the name (fuzzy)
+  // Find products matching the name (fuzzy), limit to 5 to keep context manageable
   let query = supabase
     .from('products')
     .select('id, title, auth_holder, atc_code, substances, information_update')
     .eq('lang', lang)
     .ilike('title', `%${name}%`)
-    .limit(10);
+    .limit(5);
 
   const { data: products, error } = await query;
   if (error) throw error;
