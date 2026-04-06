@@ -1,13 +1,17 @@
 /**
- * Import Fachinfo sections from XML (Supabase Storage) into sections table.
+ * Import Fachinfo sections from local XML file into Supabase sections table.
  * Uses SAX streaming parser for the 2GB XML file.
  * Resumeable: checks which products already have sections.
- * Run: npm run import:sections
+ * Usage: npm run import:sections
+ *   or:  npm run import:sections -- --xml /path/to/aips_xml.xml
+ *
+ * By default looks for ./data/aips_xml.xml
  */
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import sax from 'sax';
-import { Readable } from 'stream';
+import fs from 'fs';
+import path from 'path';
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -15,6 +19,22 @@ const supabase = createClient(
 );
 
 const BATCH_SIZE = 100;
+
+function getXmlPath(): string {
+  const args = process.argv.slice(2);
+  const xmlIdx = args.indexOf('--xml');
+  if (xmlIdx !== -1 && args[xmlIdx + 1]) {
+    return path.resolve(args[xmlIdx + 1]);
+  }
+  const candidates = [
+    path.resolve('data/aips_xml.xml'),
+    path.resolve('aips_xml.xml'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
 
 // Section code mapping from German titles
 const SECTION_MAP: Record<string, string> = {
@@ -150,15 +170,16 @@ async function importSections(): Promise<void> {
   const importedIds = await getImportedProductIds();
   console.log(`Already imported sections for ${importedIds.size} products`);
 
-  console.log('Downloading XML from Supabase Storage...');
-  const { data, error } = await supabase.storage
-    .from('import')
-    .download('aips_xml.xml');
+  const xmlPath = getXmlPath();
+  if (!fs.existsSync(xmlPath)) {
+    console.error(`XML file not found: ${xmlPath}`);
+    console.error('Place aips_xml.xml in ./data/ or specify with --xml /path/to/file');
+    process.exit(1);
+  }
 
-  if (error) throw new Error(`XML download failed: ${error.message}`);
-
-  const xmlText = await data.text();
-  console.log(`XML loaded: ${(xmlText.length / 1024 / 1024).toFixed(0)} MB`);
+  const xmlSize = fs.statSync(xmlPath).size;
+  console.log(`Reading XML: ${xmlPath} (${(xmlSize / 1024 / 1024).toFixed(0)} MB)`);
+  console.log('Streaming XML with SAX parser...');
 
   // Parse XML using SAX
   const parser = sax.parser(true, { trim: true });
@@ -284,9 +305,22 @@ async function importSections(): Promise<void> {
     parser.resume();
   };
 
-  // Feed XML to parser
-  parser.write(xmlText);
+  // Stream XML file through SAX parser in chunks (memory-efficient for 2GB file)
+  const CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB chunks
+  const fd = fs.openSync(xmlPath, 'r');
+  const fileSize = fs.statSync(xmlPath).size;
+  const buf = Buffer.alloc(CHUNK_SIZE);
+  let bytesRead = 0;
+  let totalBytesRead = 0;
+
+  while ((bytesRead = fs.readSync(fd, buf, 0, CHUNK_SIZE, null)) > 0) {
+    parser.write(buf.slice(0, bytesRead).toString('utf-8'));
+    totalBytesRead += bytesRead;
+    process.stdout.write(`\rParsing XML: ${((totalBytesRead / fileSize) * 100).toFixed(1)}%`);
+  }
+  fs.closeSync(fd);
   parser.close();
+  console.log('');
 
   console.log(`\nParsed ${totalParsed} sections from XML`);
   console.log(`Pending insert: ${pendingSections.length} sections`);

@@ -1,6 +1,9 @@
 /**
- * Import products from SQLite (stored in Supabase Storage) into products table.
- * Run: npm run import:products
+ * Import products from local SQLite file into Supabase products table.
+ * Usage: npm run import:products
+ *   or:  npm run import:products -- --db /path/to/aips_db.sqlite
+ *
+ * By default looks for ./data/aips_db.sqlite
  */
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
@@ -13,8 +16,26 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY!
 );
 
-const TMP_DB_PATH = '/tmp/aips.sqlite';
 const BATCH_SIZE = 500;
+
+// Parse --db argument or use default path
+function getDbPath(): string {
+  const args = process.argv.slice(2);
+  const dbIdx = args.indexOf('--db');
+  if (dbIdx !== -1 && args[dbIdx + 1]) {
+    return path.resolve(args[dbIdx + 1]);
+  }
+  // Default locations (check in order)
+  const candidates = [
+    path.resolve('data/aips_db.sqlite'),
+    path.resolve('aips_db.sqlite'),
+    '/tmp/aips.sqlite',
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0]; // Will fail with clear error
+}
 
 interface MedicalInfo {
   id: number;
@@ -30,24 +51,6 @@ interface MedicalInfo {
   information_update: string | null;
 }
 
-async function downloadSqlite(): Promise<void> {
-  if (fs.existsSync(TMP_DB_PATH)) {
-    console.log('SQLite already downloaded, reusing...');
-    return;
-  }
-
-  console.log('Downloading SQLite from Supabase Storage...');
-  const { data, error } = await supabase.storage
-    .from('import')
-    .download('aips_db.sqlite');
-
-  if (error) throw new Error(`Download failed: ${error.message}`);
-
-  const buffer = Buffer.from(await data.arrayBuffer());
-  fs.writeFileSync(TMP_DB_PATH, buffer);
-  console.log(`Downloaded ${(buffer.length / 1024 / 1024).toFixed(1)} MB`);
-}
-
 async function getImportedCount(): Promise<number> {
   const { count, error } = await supabase
     .from('products')
@@ -58,9 +61,16 @@ async function getImportedCount(): Promise<number> {
 }
 
 async function importProducts(): Promise<void> {
-  await downloadSqlite();
+  const dbPath = getDbPath();
 
-  const db = new Database(TMP_DB_PATH, { readonly: true });
+  if (!fs.existsSync(dbPath)) {
+    console.error(`SQLite file not found: ${dbPath}`);
+    console.error('Place aips_db.sqlite in ./data/ or specify with --db /path/to/file');
+    process.exit(1);
+  }
+
+  console.log(`Reading SQLite: ${dbPath} (${(fs.statSync(dbPath).size / 1024 / 1024).toFixed(1)} MB)`);
+  const db = new Database(dbPath, { readonly: true });
   const rows = db.prepare('SELECT * FROM medical_information ORDER BY id').all() as MedicalInfo[];
 
   console.log(`Found ${rows.length} rows in SQLite`);

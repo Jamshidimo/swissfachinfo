@@ -4,5 +4,6 @@ dist/
 .env.local
 *.sqlite
 *.xml
+data/
 .DS_Store
 .vscode/
