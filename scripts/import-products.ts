@@ -120,7 +120,7 @@ async function importProducts(): Promise<void> {
 
     const { error } = await supabase
       .from('products')
-      .upsert(batch, { onConflict: 'uq_product' });
+      .upsert(batch, { onConflict: 'title,lang,version' });
 
     if (error) {
       console.error(`Error at batch ${i}: ${error.message}`);
