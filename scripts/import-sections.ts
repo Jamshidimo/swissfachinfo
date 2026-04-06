@@ -1,26 +1,13 @@
 /**
- * Import Fachinfo sections from local XML file into Supabase sections table.
- * Uses SAX streaming parser for the 2GB XML file.
+ * Import sections from local SQLite file into Supabase sections table.
+ * Reads from the section_content table in swissmedic_fi_de_sections_v3.db.
  * Resumeable: checks which products already have sections.
  * Usage: npm run import:sections
- *   or:  npm run import:sections -- --xml /path/to/aips_xml.xml
- *
- * By default looks for ./data/AipsDownload_20250326.xml
- *
- * XML structure:
- *   <medicalInformation type="fi" lang="de" ...>
- *     <title>Product Name</title>
- *     <content><![CDATA[ ...full HTML with id="section1" markers... ]]></content>
- *     <sections>
- *       <section id="section1"><title>Product Name</title></section>
- *       <section id="section2"><title>Zusammensetzung</title></section>
- *       ...
- *     </sections>
- *   </medicalInformation>
+ *   or:  npm run import:sections -- --db /path/to/db.sqlite
  */
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
-import sax from 'sax';
+import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 
@@ -29,19 +16,17 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY!
 );
 
-const BATCH_SIZE = 100;
+const BATCH_SIZE = 200;
 
-function getXmlPath(): string {
+function getDbPath(): string {
   const args = process.argv.slice(2);
-  const xmlIdx = args.indexOf('--xml');
-  if (xmlIdx !== -1 && args[xmlIdx + 1]) {
-    return path.resolve(args[xmlIdx + 1]);
+  const dbIdx = args.indexOf('--db');
+  if (dbIdx !== -1 && args[dbIdx + 1]) {
+    return path.resolve(args[dbIdx + 1]);
   }
   const candidates = [
-    path.resolve('data/AipsDownload_20250326.xml'),
-    path.resolve('data/aips_xml.xml'),
-    path.resolve('AipsDownload_20250326.xml'),
-    path.resolve('aips_xml.xml'),
+    path.resolve('data/swissmedic_fi_de_sections_v3.db'),
+    path.resolve('data/aips_db.sqlite'),
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
@@ -54,6 +39,7 @@ const SECTION_MAP: Record<string, string> = {
   'zusammensetzung': 'composition',
   'galenische form und wirkstoffmenge': 'composition',
   'galenische form und wirkstoffmenge pro einheit': 'composition',
+  'darreichungsform und wirkstoffmenge pro einheit': 'composition',
   'indikationen': 'indications',
   'indikationen/anwendungsmöglichkeiten': 'indications',
   'anwendungsgebiete': 'indications',
@@ -89,79 +75,23 @@ const SECTION_MAP: Record<string, string> = {
   'packungen': 'packaging',
   'zulassungsinhaberin': 'manufacturer',
   'stand der information': 'revision',
-  'darreichungsform und wirkstoffmenge pro einheit': 'composition',
 };
 
 function normalizeSectionCode(title: string): string {
   const lower = title.toLowerCase().trim();
-
-  // Direct match
   if (SECTION_MAP[lower]) return SECTION_MAP[lower];
-
-  // Partial match
   for (const [key, code] of Object.entries(SECTION_MAP)) {
     if (lower.includes(key) || key.includes(lower)) return code;
   }
-
   return 'other';
 }
 
-// Strip HTML tags and clean text
-function cleanContent(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#\d+;/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/**
- * Split the CDATA HTML content by section ID markers.
- * The HTML contains elements like <div id="section1">, <div id="section2"> etc.
- * Returns a map of sectionId → HTML content for that section.
- */
-function splitContentBySections(html: string, sectionIds: string[]): Map<string, string> {
-  const result = new Map<string, string>();
-  if (!html || sectionIds.length === 0) return result;
-
-  // Build regex pattern to split by section markers
-  // Section markers appear as id="section1", id="section2", etc.
-  // They can be on div, p, or other elements
-  for (let i = 0; i < sectionIds.length; i++) {
-    const currentId = sectionIds[i];
-    const nextId = sectionIds[i + 1];
-
-    // Find content between current section marker and next section marker (or end)
-    const startPattern = new RegExp(`id=["']${currentId}["']`, 'i');
-    const startMatch = html.match(startPattern);
-
-    if (!startMatch || startMatch.index === undefined) continue;
-
-    let endIndex = html.length;
-    if (nextId) {
-      const endPattern = new RegExp(`id=["']${nextId}["']`, 'i');
-      const endMatch = html.match(endPattern);
-      if (endMatch && endMatch.index !== undefined) {
-        // Go back to the start of the opening tag
-        const tagStart = html.lastIndexOf('<', endMatch.index);
-        if (tagStart !== -1) {
-          endIndex = tagStart;
-        } else {
-          endIndex = endMatch.index;
-        }
-      }
-    }
-
-    const sectionHtml = html.slice(startMatch.index, endIndex);
-    result.set(currentId, sectionHtml);
-  }
-
-  return result;
+interface SectionRow {
+  id: number;
+  medical_info_id: number;
+  section_id: string;
+  section_name: string;
+  content_text: string;
 }
 
 async function getProductMap(): Promise<Map<string, number>> {
@@ -214,52 +144,47 @@ async function getImportedProductIds(): Promise<Set<number>> {
   return set;
 }
 
-interface SectionMeta {
-  id: string;   // e.g. "section1"
-  title: string; // e.g. "Zusammensetzung"
-}
-
-interface MedInfoCollector {
-  title: string;
-  contentCdata: string;
-  sectionMetas: SectionMeta[];
-}
-
 async function importSections(): Promise<void> {
-  console.log('Loading product map...');
-  const productMap = await getProductMap();
-  console.log(`Found ${productMap.size} products in DB`);
+  const dbPath = getDbPath();
 
+  if (!fs.existsSync(dbPath)) {
+    console.error(`SQLite file not found: ${dbPath}`);
+    process.exit(1);
+  }
+
+  console.log(`SQLite: ${dbPath} (${(fs.statSync(dbPath).size / 1024 / 1024).toFixed(1)} MB)`);
+  const db = new Database(dbPath, { readonly: true });
+
+  // Build SQLite medical_info_id → title map
+  const sqliteProducts = db.prepare(
+    'SELECT id, title FROM medical_information'
+  ).all() as { id: number; title: string }[];
+
+  const sqliteIdToTitle = new Map<number, string>();
+  for (const row of sqliteProducts) {
+    sqliteIdToTitle.set(row.id, row.title);
+  }
+  console.log(`SQLite: ${sqliteIdToTitle.size} products`);
+
+  // Load Supabase product map (title → supabase_id)
+  console.log('Loading Supabase product map...');
+  const supabaseProductMap = await getProductMap();
+  console.log(`Supabase: ${supabaseProductMap.size} products`);
+
+  // Check already imported
   console.log('Checking already imported sections...');
   const importedIds = await getImportedProductIds();
   console.log(`Already imported sections for ${importedIds.size} products`);
 
-  const xmlPath = getXmlPath();
-  if (!fs.existsSync(xmlPath)) {
-    console.error(`XML file not found: ${xmlPath}`);
-    console.error('Place the XML file in ./data/ or specify with --xml /path/to/file');
-    process.exit(1);
-  }
+  // Read all sections from SQLite
+  const sectionRows = db.prepare(
+    'SELECT id, medical_info_id, section_id, section_name, content_text FROM section_content ORDER BY medical_info_id, id'
+  ).all() as SectionRow[];
+  console.log(`SQLite: ${sectionRows.length} section rows`);
 
-  const xmlSize = fs.statSync(xmlPath).size;
-  console.log(`Reading XML: ${xmlPath} (${(xmlSize / 1024 / 1024).toFixed(0)} MB)`);
-  console.log('Streaming XML with SAX parser...');
+  db.close();
 
-  const parser = sax.parser(true, { trim: false });
-
-  // State tracking
-  let inMedInfo = false;
-  let inMedInfoTitle = false;    // <title> directly under <medicalInformation>
-  let inContent = false;         // <content> under <medicalInformation>
-  let inSections = false;        // <sections> block
-  let inSectionMeta = false;     // <section> inside <sections>
-  let inSectionMetaTitle = false; // <title> inside <section> inside <sections>
-  let tagDepth = 0;
-
-  let collector: MedInfoCollector = { title: '', contentCdata: '', sectionMetas: [] };
-  let currentSectionMetaId = '';
-  let currentSectionMetaTitle = '';
-
+  // Build pending sections
   const pendingSections: Array<{
     product_id: number;
     section_code: string;
@@ -267,219 +192,76 @@ async function importSections(): Promise<void> {
     content: string;
   }> = [];
 
-  let totalProducts = 0;
-  let totalSections = 0;
-  let matchedProducts = 0;
+  // Track duplicates per product
+  const seenPerProduct = new Map<number, Set<string>>();
+  let skippedNoMatch = 0;
   let skippedAlreadyImported = 0;
+  let skippedDuplicate = 0;
+  let skippedEmpty = 0;
 
-  async function processCollectedMedInfo() {
-    totalProducts++;
+  for (const row of sectionRows) {
+    const title = sqliteIdToTitle.get(row.medical_info_id);
+    if (!title) { skippedNoMatch++; continue; }
 
-    const title = collector.title.trim();
-    if (!title) return;
+    const productId = supabaseProductMap.get(title);
+    if (!productId) { skippedNoMatch++; continue; }
 
-    const productId = productMap.get(title);
-    if (!productId) return;
+    if (importedIds.has(productId)) { skippedAlreadyImported++; continue; }
 
-    matchedProducts++;
+    const content = (row.content_text || '').trim();
+    if (!content) { skippedEmpty++; continue; }
 
-    if (importedIds.has(productId)) {
-      skippedAlreadyImported++;
-      return;
+    const sectionCode = normalizeSectionCode(row.section_name);
+
+    // Deduplicate per product
+    if (!seenPerProduct.has(productId)) {
+      seenPerProduct.set(productId, new Set());
     }
+    const seen = seenPerProduct.get(productId)!;
+    if (seen.has(sectionCode)) { skippedDuplicate++; continue; }
+    seen.add(sectionCode);
 
-    const html = collector.contentCdata;
-    const sectionMetas = collector.sectionMetas;
-
-    if (!html || sectionMetas.length === 0) return;
-
-    // Split HTML by section IDs
-    const sectionIds = sectionMetas.map(s => s.id);
-    const splitSections = splitContentBySections(html, sectionIds);
-
-    // Track seen section_codes to avoid duplicates per product
-    const seenCodes = new Set<string>();
-
-    for (const meta of sectionMetas) {
-      const sectionHtml = splitSections.get(meta.id);
-      if (!sectionHtml) continue;
-
-      const cleaned = cleanContent(sectionHtml);
-      if (cleaned.length < 3) continue; // Skip empty/trivial sections
-
-      const sectionCode = normalizeSectionCode(meta.title);
-
-      if (seenCodes.has(sectionCode)) continue;
-      seenCodes.add(sectionCode);
-
-      pendingSections.push({
-        product_id: productId,
-        section_code: sectionCode,
-        section_title: meta.title.trim(),
-        content: cleaned,
-      });
-      totalSections++;
-    }
+    pendingSections.push({
+      product_id: productId,
+      section_code: sectionCode,
+      section_title: row.section_name.trim(),
+      content,
+    });
   }
 
-  parser.onopentag = (tag) => {
-    tagDepth++;
-
-    if (tag.name === 'medicalInformation') {
-      inMedInfo = true;
-      collector = { title: '', contentCdata: '', sectionMetas: [] };
-      return;
-    }
-
-    if (!inMedInfo) return;
-
-    // <title> directly under <medicalInformation> (not inside <sections>)
-    if (tag.name === 'title' && !inSections && !inContent) {
-      inMedInfoTitle = true;
-      return;
-    }
-
-    // <content> under <medicalInformation>
-    if (tag.name === 'content' && !inSections) {
-      inContent = true;
-      collector.contentCdata = '';
-      return;
-    }
-
-    // <sections> block
-    if (tag.name === 'sections') {
-      inSections = true;
-      return;
-    }
-
-    // <section id="sectionN"> inside <sections>
-    if (tag.name === 'section' && inSections) {
-      inSectionMeta = true;
-      currentSectionMetaId = String(tag.attributes.id || '');
-      currentSectionMetaTitle = '';
-      return;
-    }
-
-    // <title> inside <section> inside <sections>
-    if (tag.name === 'title' && inSectionMeta) {
-      inSectionMetaTitle = true;
-      currentSectionMetaTitle = '';
-      return;
-    }
-  };
-
-  parser.ontext = (text) => {
-    if (inMedInfoTitle) {
-      collector.title += text;
-    }
-    if (inContent) {
-      collector.contentCdata += text;
-    }
-    if (inSectionMetaTitle) {
-      currentSectionMetaTitle += text;
-    }
-  };
-
-  parser.oncdata = (cdata) => {
-    if (inContent) {
-      collector.contentCdata += cdata;
-    }
-  };
-
-  parser.onclosetag = (tagName) => {
-    tagDepth--;
-
-    if (tagName === 'title' && inSectionMetaTitle) {
-      inSectionMetaTitle = false;
-      return;
-    }
-
-    if (tagName === 'title' && inMedInfoTitle) {
-      inMedInfoTitle = false;
-      return;
-    }
-
-    if (tagName === 'content' && inContent) {
-      inContent = false;
-      return;
-    }
-
-    if (tagName === 'section' && inSectionMeta) {
-      inSectionMeta = false;
-      if (currentSectionMetaId) {
-        collector.sectionMetas.push({
-          id: currentSectionMetaId,
-          title: currentSectionMetaTitle.trim(),
-        });
-      }
-      return;
-    }
-
-    if (tagName === 'sections' && inSections) {
-      inSections = false;
-      return;
-    }
-
-    if (tagName === 'medicalInformation' && inMedInfo) {
-      inMedInfo = false;
-      processCollectedMedInfo();
-    }
-  };
-
-  parser.onerror = (err) => {
-    console.error('XML parse error:', err.message);
-    parser.resume();
-  };
-
-  // Stream XML file through SAX parser in chunks
-  const CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB
-  const fd = fs.openSync(xmlPath, 'r');
-  const buf = Buffer.alloc(CHUNK_SIZE);
-  let bytesRead = 0;
-  let totalBytesRead = 0;
-
-  while ((bytesRead = fs.readSync(fd, buf, 0, CHUNK_SIZE, null)) > 0) {
-    parser.write(buf.slice(0, bytesRead).toString('utf-8'));
-    totalBytesRead += bytesRead;
-    process.stdout.write(`\rParsing XML: ${((totalBytesRead / xmlSize) * 100).toFixed(1)}% | Products: ${totalProducts} | Sections: ${totalSections}`);
-  }
-  fs.closeSync(fd);
-  parser.close();
-  console.log('');
-
-  console.log(`\nXML parsing complete:`);
-  console.log(`  Total products in XML: ${totalProducts}`);
-  console.log(`  Matched to DB: ${matchedProducts}`);
+  console.log(`\nReady to insert: ${pendingSections.length} sections`);
+  console.log(`  Skipped (no match): ${skippedNoMatch}`);
   console.log(`  Skipped (already imported): ${skippedAlreadyImported}`);
-  console.log(`  Sections to insert: ${pendingSections.length}`);
+  console.log(`  Skipped (duplicate code): ${skippedDuplicate}`);
+  console.log(`  Skipped (empty): ${skippedEmpty}`);
 
   if (pendingSections.length === 0) {
-    console.log('No sections to insert.');
+    console.log('Nothing to insert.');
     return;
   }
 
-  // Batch insert
+  // Batch upsert
   let totalInserted = 0;
-  let totalSkipped = 0;
+  let totalErrors = 0;
 
   for (let i = 0; i < pendingSections.length; i += BATCH_SIZE) {
     const batch = pendingSections.slice(i, i + BATCH_SIZE);
 
-    const { error: insertError } = await supabase
+    const { error } = await supabase
       .from('sections')
       .upsert(batch, { onConflict: 'product_id,section_code' });
 
-    if (insertError) {
-      console.error(`\nBatch error at ${i}: ${insertError.message}`);
-      totalSkipped += batch.length;
+    if (error) {
+      console.error(`\nBatch error at ${i}: ${error.message}`);
+      totalErrors += batch.length;
     } else {
       totalInserted += batch.length;
     }
 
-    process.stdout.write(`\rInserted: ${totalInserted} / ${pendingSections.length} (skipped: ${totalSkipped})`);
+    process.stdout.write(`\rInserted: ${totalInserted} / ${pendingSections.length} (errors: ${totalErrors})`);
   }
 
-  console.log(`\n\nDone! Inserted: ${totalInserted}, Skipped: ${totalSkipped}`);
+  console.log(`\n\nDone! Inserted: ${totalInserted}, Errors: ${totalErrors}`);
 }
 
 importSections().catch(err => {
