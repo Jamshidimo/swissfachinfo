@@ -253,7 +253,13 @@ export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
     }
   } catch (err) {
     console.error(`Tool ${toolCall.name} error:`, err);
-    data = [];
+    // Return error details instead of silently swallowing
+    return {
+      tool: toolCall.name,
+      params: toolCall.parameters,
+      data: [{ _error: String(err) }],
+      count: 0,
+    };
   }
 
   return {
