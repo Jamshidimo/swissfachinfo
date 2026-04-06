@@ -5,7 +5,18 @@
  * Usage: npm run import:sections
  *   or:  npm run import:sections -- --xml /path/to/aips_xml.xml
  *
- * By default looks for ./data/aips_xml.xml
+ * By default looks for ./data/AipsDownload_20250326.xml
+ *
+ * XML structure:
+ *   <medicalInformation type="fi" lang="de" ...>
+ *     <title>Product Name</title>
+ *     <content><![CDATA[ ...full HTML with id="section1" markers... ]]></content>
+ *     <sections>
+ *       <section id="section1"><title>Product Name</title></section>
+ *       <section id="section2"><title>Zusammensetzung</title></section>
+ *       ...
+ *     </sections>
+ *   </medicalInformation>
  */
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
@@ -42,6 +53,7 @@ function getXmlPath(): string {
 const SECTION_MAP: Record<string, string> = {
   'zusammensetzung': 'composition',
   'galenische form und wirkstoffmenge': 'composition',
+  'galenische form und wirkstoffmenge pro einheit': 'composition',
   'indikationen': 'indications',
   'indikationen/anwendungsmöglichkeiten': 'indications',
   'anwendungsgebiete': 'indications',
@@ -57,6 +69,7 @@ const SECTION_MAP: Record<string, string> = {
   'schwangerschaft/stillzeit': 'pregnancy',
   'fertilität, schwangerschaft und stillzeit': 'pregnancy',
   'wirkung auf die fahrtüchtigkeit': 'driving',
+  'wirkung auf die fahrtüchtigkeit und auf das bedienen von maschinen': 'driving',
   'fahrtüchtigkeit': 'driving',
   'unerwünschte wirkungen': 'side_effects',
   'nebenwirkungen': 'side_effects',
@@ -76,6 +89,7 @@ const SECTION_MAP: Record<string, string> = {
   'packungen': 'packaging',
   'zulassungsinhaberin': 'manufacturer',
   'stand der information': 'revision',
+  'darreichungsform und wirkstoffmenge pro einheit': 'composition',
 };
 
 function normalizeSectionCode(title: string): string {
@@ -106,11 +120,48 @@ function cleanContent(html: string): string {
     .trim();
 }
 
-interface SectionData {
-  product_title: string;
-  section_code: string;
-  section_title: string;
-  content: string;
+/**
+ * Split the CDATA HTML content by section ID markers.
+ * The HTML contains elements like <div id="section1">, <div id="section2"> etc.
+ * Returns a map of sectionId → HTML content for that section.
+ */
+function splitContentBySections(html: string, sectionIds: string[]): Map<string, string> {
+  const result = new Map<string, string>();
+  if (!html || sectionIds.length === 0) return result;
+
+  // Build regex pattern to split by section markers
+  // Section markers appear as id="section1", id="section2", etc.
+  // They can be on div, p, or other elements
+  for (let i = 0; i < sectionIds.length; i++) {
+    const currentId = sectionIds[i];
+    const nextId = sectionIds[i + 1];
+
+    // Find content between current section marker and next section marker (or end)
+    const startPattern = new RegExp(`id=["']${currentId}["']`, 'i');
+    const startMatch = html.match(startPattern);
+
+    if (!startMatch || startMatch.index === undefined) continue;
+
+    let endIndex = html.length;
+    if (nextId) {
+      const endPattern = new RegExp(`id=["']${nextId}["']`, 'i');
+      const endMatch = html.match(endPattern);
+      if (endMatch && endMatch.index !== undefined) {
+        // Go back to the start of the opening tag
+        const tagStart = html.lastIndexOf('<', endMatch.index);
+        if (tagStart !== -1) {
+          endIndex = tagStart;
+        } else {
+          endIndex = endMatch.index;
+        }
+      }
+    }
+
+    const sectionHtml = html.slice(startMatch.index, endIndex);
+    result.set(currentId, sectionHtml);
+  }
+
+  return result;
 }
 
 async function getProductMap(): Promise<Map<string, number>> {
@@ -163,6 +214,17 @@ async function getImportedProductIds(): Promise<Set<number>> {
   return set;
 }
 
+interface SectionMeta {
+  id: string;   // e.g. "section1"
+  title: string; // e.g. "Zusammensetzung"
+}
+
+interface MedInfoCollector {
+  title: string;
+  contentCdata: string;
+  sectionMetas: SectionMeta[];
+}
+
 async function importSections(): Promise<void> {
   console.log('Loading product map...');
   const productMap = await getProductMap();
@@ -175,7 +237,7 @@ async function importSections(): Promise<void> {
   const xmlPath = getXmlPath();
   if (!fs.existsSync(xmlPath)) {
     console.error(`XML file not found: ${xmlPath}`);
-    console.error('Place aips_xml.xml in ./data/ or specify with --xml /path/to/file');
+    console.error('Place the XML file in ./data/ or specify with --xml /path/to/file');
     process.exit(1);
   }
 
@@ -183,16 +245,20 @@ async function importSections(): Promise<void> {
   console.log(`Reading XML: ${xmlPath} (${(xmlSize / 1024 / 1024).toFixed(0)} MB)`);
   console.log('Streaming XML with SAX parser...');
 
-  // Parse XML using SAX
-  const parser = sax.parser(true, { trim: true });
+  const parser = sax.parser(true, { trim: false });
 
-  let currentTitle = '';
-  let inTitle = false;
-  let inSection = false;
-  let inContent = false;
-  let sectionTitle = '';
-  let contentBuffer = '';
-  let tagStack: string[] = [];
+  // State tracking
+  let inMedInfo = false;
+  let inMedInfoTitle = false;    // <title> directly under <medicalInformation>
+  let inContent = false;         // <content> under <medicalInformation>
+  let inSections = false;        // <sections> block
+  let inSectionMeta = false;     // <section> inside <sections>
+  let inSectionMetaTitle = false; // <title> inside <section> inside <sections>
+  let tagDepth = 0;
+
+  let collector: MedInfoCollector = { title: '', contentCdata: '', sectionMetas: [] };
+  let currentSectionMetaId = '';
+  let currentSectionMetaTitle = '';
 
   const pendingSections: Array<{
     product_id: number;
@@ -201,104 +267,162 @@ async function importSections(): Promise<void> {
     content: string;
   }> = [];
 
-  let totalParsed = 0;
-  let totalInserted = 0;
-  let totalSkipped = 0;
+  let totalProducts = 0;
+  let totalSections = 0;
+  let matchedProducts = 0;
+  let skippedAlreadyImported = 0;
+
+  async function processCollectedMedInfo() {
+    totalProducts++;
+
+    const title = collector.title.trim();
+    if (!title) return;
+
+    const productId = productMap.get(title);
+    if (!productId) return;
+
+    matchedProducts++;
+
+    if (importedIds.has(productId)) {
+      skippedAlreadyImported++;
+      return;
+    }
+
+    const html = collector.contentCdata;
+    const sectionMetas = collector.sectionMetas;
+
+    if (!html || sectionMetas.length === 0) return;
+
+    // Split HTML by section IDs
+    const sectionIds = sectionMetas.map(s => s.id);
+    const splitSections = splitContentBySections(html, sectionIds);
+
+    // Track seen section_codes to avoid duplicates per product
+    const seenCodes = new Set<string>();
+
+    for (const meta of sectionMetas) {
+      const sectionHtml = splitSections.get(meta.id);
+      if (!sectionHtml) continue;
+
+      const cleaned = cleanContent(sectionHtml);
+      if (cleaned.length < 3) continue; // Skip empty/trivial sections
+
+      const sectionCode = normalizeSectionCode(meta.title);
+
+      if (seenCodes.has(sectionCode)) continue;
+      seenCodes.add(sectionCode);
+
+      pendingSections.push({
+        product_id: productId,
+        section_code: sectionCode,
+        section_title: meta.title.trim(),
+        content: cleaned,
+      });
+      totalSections++;
+    }
+  }
 
   parser.onopentag = (tag) => {
-    tagStack.push(tag.name);
+    tagDepth++;
 
-    if (tag.name === 'medicalInformation' || tag.name === 'fi' || tag.name === 'pi') {
-      // Look for title attribute or child
-      if (tag.attributes.title) {
-        currentTitle = String(tag.attributes.title);
-      }
+    if (tag.name === 'medicalInformation') {
+      inMedInfo = true;
+      collector = { title: '', contentCdata: '', sectionMetas: [] };
+      return;
     }
 
-    if (tag.name === 'title' && (tagStack.includes('medicalInformation') || tagStack.includes('fi') || tagStack.includes('pi'))) {
-      inTitle = true;
-      currentTitle = '';
+    if (!inMedInfo) return;
+
+    // <title> directly under <medicalInformation> (not inside <sections>)
+    if (tag.name === 'title' && !inSections && !inContent) {
+      inMedInfoTitle = true;
+      return;
     }
 
-    if (tag.name === 'section') {
-      inSection = true;
-      sectionTitle = '';
-      contentBuffer = '';
-    }
-
-    if (tag.name === 'title' && inSection) {
-      inTitle = true;
-      sectionTitle = '';
-    }
-
-    if (tag.name === 'content' && inSection) {
+    // <content> under <medicalInformation>
+    if (tag.name === 'content' && !inSections) {
       inContent = true;
-      contentBuffer = '';
+      collector.contentCdata = '';
+      return;
+    }
+
+    // <sections> block
+    if (tag.name === 'sections') {
+      inSections = true;
+      return;
+    }
+
+    // <section id="sectionN"> inside <sections>
+    if (tag.name === 'section' && inSections) {
+      inSectionMeta = true;
+      currentSectionMetaId = String(tag.attributes.id || '');
+      currentSectionMetaTitle = '';
+      return;
+    }
+
+    // <title> inside <section> inside <sections>
+    if (tag.name === 'title' && inSectionMeta) {
+      inSectionMetaTitle = true;
+      currentSectionMetaTitle = '';
+      return;
     }
   };
 
   parser.ontext = (text) => {
-    if (inTitle && inSection) {
-      sectionTitle += text;
-    } else if (inTitle) {
-      currentTitle += text;
+    if (inMedInfoTitle) {
+      collector.title += text;
     }
     if (inContent) {
-      contentBuffer += text;
+      collector.contentCdata += text;
+    }
+    if (inSectionMetaTitle) {
+      currentSectionMetaTitle += text;
     }
   };
 
   parser.oncdata = (cdata) => {
     if (inContent) {
-      contentBuffer += cdata;
+      collector.contentCdata += cdata;
     }
   };
 
   parser.onclosetag = (tagName) => {
-    tagStack.pop();
+    tagDepth--;
 
-    if (tagName === 'title') {
-      inTitle = false;
+    if (tagName === 'title' && inSectionMetaTitle) {
+      inSectionMetaTitle = false;
+      return;
     }
 
-    if (tagName === 'content') {
+    if (tagName === 'title' && inMedInfoTitle) {
+      inMedInfoTitle = false;
+      return;
+    }
+
+    if (tagName === 'content' && inContent) {
       inContent = false;
+      return;
     }
 
-    if (tagName === 'section' && inSection) {
-      inSection = false;
-
-      if (currentTitle && contentBuffer.trim()) {
-        const productId = productMap.get(currentTitle);
-
-        if (productId && !importedIds.has(productId)) {
-          const cleaned = cleanContent(contentBuffer);
-          if (cleaned.length > 0) {
-            const sectionCode = normalizeSectionCode(sectionTitle);
-
-            // Avoid duplicate section_codes per product
-            const existing = pendingSections.find(
-              s => s.product_id === productId && s.section_code === sectionCode
-            );
-
-            if (!existing) {
-              pendingSections.push({
-                product_id: productId,
-                section_code: sectionCode,
-                section_title: sectionTitle.trim() || sectionCode,
-                content: cleaned
-              });
-            }
-          }
-        }
-
-        totalParsed++;
+    if (tagName === 'section' && inSectionMeta) {
+      inSectionMeta = false;
+      if (currentSectionMetaId) {
+        collector.sectionMetas.push({
+          id: currentSectionMetaId,
+          title: currentSectionMetaTitle.trim(),
+        });
       }
+      return;
     }
 
-    if (tagName === 'medicalInformation' || tagName === 'fi' || tagName === 'pi') {
-      // Flush pending sections for this product
-      currentTitle = '';
+    if (tagName === 'sections' && inSections) {
+      inSections = false;
+      return;
+    }
+
+    if (tagName === 'medicalInformation' && inMedInfo) {
+      inMedInfo = false;
+      processCollectedMedInfo();
     }
   };
 
@@ -307,10 +431,9 @@ async function importSections(): Promise<void> {
     parser.resume();
   };
 
-  // Stream XML file through SAX parser in chunks (memory-efficient for 2GB file)
-  const CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB chunks
+  // Stream XML file through SAX parser in chunks
+  const CHUNK_SIZE = 16 * 1024 * 1024; // 16 MB
   const fd = fs.openSync(xmlPath, 'r');
-  const fileSize = fs.statSync(xmlPath).size;
   const buf = Buffer.alloc(CHUNK_SIZE);
   let bytesRead = 0;
   let totalBytesRead = 0;
@@ -318,16 +441,27 @@ async function importSections(): Promise<void> {
   while ((bytesRead = fs.readSync(fd, buf, 0, CHUNK_SIZE, null)) > 0) {
     parser.write(buf.slice(0, bytesRead).toString('utf-8'));
     totalBytesRead += bytesRead;
-    process.stdout.write(`\rParsing XML: ${((totalBytesRead / fileSize) * 100).toFixed(1)}%`);
+    process.stdout.write(`\rParsing XML: ${((totalBytesRead / xmlSize) * 100).toFixed(1)}% | Products: ${totalProducts} | Sections: ${totalSections}`);
   }
   fs.closeSync(fd);
   parser.close();
   console.log('');
 
-  console.log(`\nParsed ${totalParsed} sections from XML`);
-  console.log(`Pending insert: ${pendingSections.length} sections`);
+  console.log(`\nXML parsing complete:`);
+  console.log(`  Total products in XML: ${totalProducts}`);
+  console.log(`  Matched to DB: ${matchedProducts}`);
+  console.log(`  Skipped (already imported): ${skippedAlreadyImported}`);
+  console.log(`  Sections to insert: ${pendingSections.length}`);
+
+  if (pendingSections.length === 0) {
+    console.log('No sections to insert.');
+    return;
+  }
 
   // Batch insert
+  let totalInserted = 0;
+  let totalSkipped = 0;
+
   for (let i = 0; i < pendingSections.length; i += BATCH_SIZE) {
     const batch = pendingSections.slice(i, i + BATCH_SIZE);
 
@@ -336,7 +470,7 @@ async function importSections(): Promise<void> {
       .upsert(batch, { onConflict: 'product_id,section_code' });
 
     if (insertError) {
-      console.error(`Batch error at ${i}: ${insertError.message}`);
+      console.error(`\nBatch error at ${i}: ${insertError.message}`);
       totalSkipped += batch.length;
     } else {
       totalInserted += batch.length;
