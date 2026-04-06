@@ -14,6 +14,8 @@ async function embedJina(texts: string[]): Promise<number[][]> {
       model,
       input: texts.map(t => t.slice(0, 8000)),
       encoding_type: 'float',
+      task: 'retrieval.query',
+      dimensions: 1024,
     }),
   });
 
