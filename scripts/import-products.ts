@@ -96,9 +96,17 @@ async function importProducts(): Promise<void> {
   const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[];
   console.log('Columns:', columns.map(c => c.name).join(', '));
 
-  const rows = db.prepare(`SELECT * FROM "${tableName}" ORDER BY rowid`).all() as MedicalInfo[];
+  const rawRows = db.prepare(`SELECT * FROM "${tableName}" ORDER BY rowid`).all() as MedicalInfo[];
+  console.log(`Found ${rawRows.length} rows in SQLite`);
 
-  console.log(`Found ${rows.length} rows in SQLite`);
+  // Deduplicate: keep last occurrence per (title, lang, version)
+  const deduped = new Map<string, MedicalInfo>();
+  for (const row of rawRows) {
+    const key = `${row.title}|${row.lang}|${row.version}`;
+    deduped.set(key, row);
+  }
+  const rows = Array.from(deduped.values());
+  console.log(`After deduplication: ${rows.length} unique products`);
 
   const existingCount = await getImportedCount();
   console.log(`Already imported: ${existingCount} products`);
