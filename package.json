@@ -1,0 +1,28 @@
+{
+  "name": "swissfachinfo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "import:products": "tsx scripts/import-products.ts",
+    "import:sections": "tsx scripts/import-sections.ts",
+    "import:embeddings": "tsx scripts/generate-embeddings.ts",
+    "import:verify": "tsx scripts/verify-import.ts",
+    "import:all": "npm run import:products && npm run import:sections && npm run import:verify",
+    "dev": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "deploy": "cd frontend && npm run build && cp -r dist/* ../docs/"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "better-sqlite3": "^11.0.0",
+    "dotenv": "^16.4.0",
+    "sax": "^1.4.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/sax": "^1.2.7",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}
