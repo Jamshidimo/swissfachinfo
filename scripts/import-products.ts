@@ -115,7 +115,15 @@ async function importProducts(): Promise<void> {
       auth_nrs: row.auth_nrs ? row.auth_nrs.split(', ').map(s => s.trim()).filter(Boolean) : [],
       lang: row.lang || 'de',
       version: row.version,
-      information_update: row.information_update || null
+      // Convert "MM.YYYY" to "YYYY-MM-01" for PostgreSQL DATE
+      information_update: row.information_update
+        ? (() => {
+            const parts = row.information_update.split('.');
+            if (parts.length === 2) return `${parts[1]}-${parts[0].padStart(2, '0')}-01`;
+            if (parts.length === 3) return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+            return null;
+          })()
+        : null
     }));
 
     const { error } = await supabase
