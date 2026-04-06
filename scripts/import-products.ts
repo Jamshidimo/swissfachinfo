@@ -27,9 +27,10 @@ function getDbPath(): string {
   }
   // Default locations (check in order)
   const candidates = [
+    path.resolve('data/swissmedic_fi_de_sections_v3.db'),
     path.resolve('data/aips_db.sqlite'),
+    path.resolve('swissmedic_fi_de_sections_v3.db'),
     path.resolve('aips_db.sqlite'),
-    '/tmp/aips.sqlite',
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
@@ -71,7 +72,31 @@ async function importProducts(): Promise<void> {
 
   console.log(`Reading SQLite: ${dbPath} (${(fs.statSync(dbPath).size / 1024 / 1024).toFixed(1)} MB)`);
   const db = new Database(dbPath, { readonly: true });
-  const rows = db.prepare('SELECT * FROM medical_information ORDER BY id').all() as MedicalInfo[];
+
+  // Discover table name (different source files use different names)
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+  console.log('Tables found:', tables.map(t => t.name).join(', '));
+
+  const tableName = tables.find(t =>
+    t.name === 'medical_information' ||
+    t.name === 'sections' ||
+    t.name.includes('medic') ||
+    t.name.includes('section') ||
+    t.name.includes('product')
+  )?.name || tables[0]?.name;
+
+  if (!tableName) {
+    console.error('No tables found in SQLite database!');
+    process.exit(1);
+  }
+
+  console.log(`Using table: ${tableName}`);
+
+  // Show columns for debugging
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[];
+  console.log('Columns:', columns.map(c => c.name).join(', '));
+
+  const rows = db.prepare(`SELECT * FROM "${tableName}" ORDER BY rowid`).all() as MedicalInfo[];
 
   console.log(`Found ${rows.length} rows in SQLite`);
 

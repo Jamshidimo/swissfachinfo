@@ -27,7 +27,9 @@ function getXmlPath(): string {
     return path.resolve(args[xmlIdx + 1]);
   }
   const candidates = [
+    path.resolve('data/AipsDownload_20250326.xml'),
     path.resolve('data/aips_xml.xml'),
+    path.resolve('AipsDownload_20250326.xml'),
     path.resolve('aips_xml.xml'),
   ];
   for (const p of candidates) {
