@@ -16,8 +16,8 @@ const supabase = createClient(
 
 const JINA_API_KEY = process.env.EMBEDDING_API_KEY!;
 const JINA_MODEL = process.env.EMBEDDING_MODEL || 'jina-embeddings-v3';
-const BATCH_SIZE = 50;
-const RATE_LIMIT_MS = 500;
+const BATCH_SIZE = 25;
+const RATE_LIMIT_MS = 2500; // ~60k tokens/min to stay under 100k/min limit
 const MAX_CHARS = 1400; // Truncate to save tokens (~9M for 10M budget)
 
 // Only embed these medically relevant section codes
