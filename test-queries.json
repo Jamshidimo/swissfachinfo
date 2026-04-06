@@ -1,0 +1,145 @@
+{
+  "description": "Test queries for SwissFachinfo - mix of Stufe 1 (direct) and Stufe 2 (comparison) questions",
+  "queries": [
+    {
+      "id": 1,
+      "question": "Kontraindikationen von Eliquis",
+      "type": "stufe1_product",
+      "expected_tools": ["search_by_product"],
+      "expected_sections": ["contraindications"]
+    },
+    {
+      "id": 2,
+      "question": "Dosierung von Amoxicillin bei Kindern",
+      "type": "stufe1_substance",
+      "expected_tools": ["search_by_substance"],
+      "expected_sections": ["dosage"]
+    },
+    {
+      "id": 3,
+      "question": "Darf Metformin in der Stillzeit eingenommen werden?",
+      "type": "stufe1_substance",
+      "expected_tools": ["search_by_substance"],
+      "expected_sections": ["pregnancy", "contraindications"]
+    },
+    {
+      "id": 4,
+      "question": "Interaktionen von Clopidogrel mit Pantoprazol",
+      "type": "stufe1_interaction",
+      "expected_tools": ["search_by_substance"],
+      "expected_sections": ["interactions"]
+    },
+    {
+      "id": 5,
+      "question": "Nebenwirkungen von Atorvastatin",
+      "type": "stufe1_substance",
+      "expected_tools": ["search_by_substance"],
+      "expected_sections": ["side_effects"]
+    },
+    {
+      "id": 6,
+      "question": "Welches SSRI hat die wenigsten sexuellen Nebenwirkungen?",
+      "type": "stufe2_comparison",
+      "expected_tools": ["search_by_atc", "semantic_search"],
+      "expected_sections": ["side_effects"]
+    },
+    {
+      "id": 7,
+      "question": "Vergleich der UAW-Profile aller Statine",
+      "type": "stufe2_comparison",
+      "expected_tools": ["search_by_atc"],
+      "expected_sections": ["side_effects", "warnings"]
+    },
+    {
+      "id": 8,
+      "question": "Welches Antipsychotikum hat die wenigsten metabolischen Nebenwirkungen?",
+      "type": "stufe2_comparison",
+      "expected_tools": ["search_by_atc", "semantic_search"],
+      "expected_sections": ["side_effects", "warnings"]
+    },
+    {
+      "id": 9,
+      "question": "Gibt es ein Antidepressivum das auch bei neuropathischen Schmerzen hilft?",
+      "type": "stufe2_indication",
+      "expected_tools": ["search_by_atc", "search_by_indication"],
+      "expected_sections": ["indications"]
+    },
+    {
+      "id": 10,
+      "question": "Welche Antibiotika sind bei Penicillin-Allergie eine Alternative?",
+      "type": "stufe2_comparison",
+      "expected_tools": ["semantic_search", "fulltext_search"],
+      "expected_sections": ["indications", "contraindications"]
+    },
+    {
+      "id": 11,
+      "question": "Zusammensetzung von Dafalgan",
+      "type": "stufe1_product",
+      "expected_tools": ["search_by_product"],
+      "expected_sections": ["composition"]
+    },
+    {
+      "id": 12,
+      "question": "Kann Ibuprofen zusammen mit Aspirin eingenommen werden?",
+      "type": "stufe1_interaction",
+      "expected_tools": ["search_by_substance"],
+      "expected_sections": ["interactions"]
+    },
+    {
+      "id": 13,
+      "question": "Welches NSAR hat das geringste kardiovaskuläre Risiko?",
+      "type": "stufe2_comparison",
+      "expected_tools": ["search_by_atc", "semantic_search"],
+      "expected_sections": ["warnings", "side_effects"]
+    },
+    {
+      "id": 14,
+      "question": "Pharmakokinetik von Rivaroxaban",
+      "type": "stufe1_substance",
+      "expected_tools": ["search_by_substance"],
+      "expected_sections": ["pharmacokinetics"]
+    },
+    {
+      "id": 15,
+      "question": "Aufbewahrungshinweise für Insulin Lantus",
+      "type": "stufe1_product",
+      "expected_tools": ["search_by_product"],
+      "expected_sections": ["storage"]
+    },
+    {
+      "id": 16,
+      "question": "Alle zugelassenen Präparate mit Wirkstoff Metoprolol",
+      "type": "stufe1_substance",
+      "expected_tools": ["search_by_substance"],
+      "expected_sections": []
+    },
+    {
+      "id": 17,
+      "question": "Wirkung von Pregabalin auf die Fahrtüchtigkeit",
+      "type": "stufe1_substance",
+      "expected_tools": ["search_by_substance"],
+      "expected_sections": ["driving"]
+    },
+    {
+      "id": 18,
+      "question": "Vergleich der Halbwertszeiten aller ACE-Hemmer",
+      "type": "stufe2_comparison",
+      "expected_tools": ["search_by_atc"],
+      "expected_sections": ["pharmacokinetics"]
+    },
+    {
+      "id": 19,
+      "question": "Welche Medikamente enthalten Codein?",
+      "type": "stufe1_substance",
+      "expected_tools": ["search_by_substance"],
+      "expected_sections": []
+    },
+    {
+      "id": 20,
+      "question": "Überdosierung von Paracetamol - was tun?",
+      "type": "stufe1_substance",
+      "expected_tools": ["search_by_substance"],
+      "expected_sections": ["overdose"]
+    }
+  ]
+}
