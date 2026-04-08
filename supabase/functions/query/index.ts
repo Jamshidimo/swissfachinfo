@@ -39,11 +39,14 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
     'interaktion', 'wechselwirkung', 'kombination', 'zusammen mit', 'gleichzeitig',
     'kombinieren', 'komedikation', 'arzneimittelinteraktion', 'cyp',
     'verstärkt', 'abschwächt', 'beeinflusst', 'hemmt', 'induziert',
+    'alkohol', 'trinken', 'grapefruit', 'nahrungsmittel', 'milch',
+    'antabus', 'disulfiram',
   ],
   warnings: [
     'warnhinweis', 'vorsichtsmassnahme', 'vorsicht', 'cave', 'achtung',
     'besondere vorsicht', 'sorgfältig', 'überwach', 'monitor',
     'risikofaktor', 'risikogruppe',
+    'alkohol', 'leber', 'niere', 'herz', 'blut', 'allergie', 'allergisch',
   ],
   indications: [
     'indikation', 'anwendungsgebiet', 'wofür', 'wozu', 'wann wird',
@@ -321,31 +324,51 @@ async function searchFulltext(searchTerms: string[], sectionCodes: string[]): Pr
   };
 }
 
+// Default sections to load when no specific section is detected
+const DEFAULT_SECTIONS = [
+  'warnings', 'interactions', 'contraindications', 'side_effects',
+  'dosage', 'indications', 'pregnancy',
+];
+
 // --- Main search orchestrator ---
 async function searchDatabase(question: string): Promise<SearchResult> {
   const sectionCodes = detectSections(question);
   const searchTerms = extractSearchTerms(question);
   const keywordsMatched = sectionCodes.length > 0;
 
-  // Path A: Keywords matched sections → deterministic search (fast, free)
-  if (keywordsMatched && searchTerms.length > 0) {
-    const result = await searchByNameAndSubstance(searchTerms, sectionCodes);
+  // Use detected sections, or fall back to a broad set of important sections
+  const effectiveSections = keywordsMatched ? sectionCodes : DEFAULT_SECTIONS;
+
+  // Path A: Try product/substance name match (fast, free)
+  if (searchTerms.length > 0) {
+    const result = await searchByNameAndSubstance(searchTerms, effectiveSections);
     if (result && result.products.some(p => p.sections.length > 0)) {
       return result;
     }
   }
 
-  // Path B: No keywords OR no product found → semantic search (uses embeddings)
-  // This handles unusual phrasings like "Darf ich das Medikament nehmen wenn ich ein Baby erwarte?"
-  const semanticResult = await searchSemantic(question, searchTerms);
-  if (semanticResult.products.some(p => p.sections.length > 0)) {
-    return semanticResult;
+  // Path B: Semantic search (uses embeddings, handles unusual phrasings)
+  try {
+    const semanticResult = await searchSemantic(question, searchTerms);
+    if (semanticResult.products.some(p => p.sections.length > 0)) {
+      return semanticResult;
+    }
+  } catch (err) {
+    console.error('Semantic search failed, continuing to fulltext:', err);
   }
 
-  // Path C: Fulltext fallback
+  // Path C: Fulltext fallback (try with fewer terms if needed)
   if (searchTerms.length > 0) {
-    const fulltextResult = await searchFulltext(searchTerms, sectionCodes);
+    // First try all terms
+    const fulltextResult = await searchFulltext(searchTerms, effectiveSections);
     if (fulltextResult) return fulltextResult;
+
+    // If that fails, try each term individually
+    for (const term of searchTerms) {
+      if (term.length < 3) continue;
+      const singleResult = await searchFulltext([term], effectiveSections);
+      if (singleResult) return singleResult;
+    }
   }
 
   return { products: [], searchType: 'none', searchDetails: ['Keine Ergebnisse'] };
