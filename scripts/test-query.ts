@@ -4,22 +4,37 @@ import { createClient } from '@supabase/supabase-js';
 async function main() {
   const sb = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!);
 
-  // Test 1: Simple search (works)
-  const { data, error } = await sb.from('products').select('title').ilike('title', '%liquis%').limit(5);
-  console.log('Without lang filter:', data, error);
+  // Find Ibuprofen products
+  const { data: products } = await sb.from('products').select('id, title').ilike('title', '%Ibuprofen%').limit(5);
+  console.log('Ibuprofen products:', products?.map(p => `${p.id}: ${p.title}`));
 
-  // Test 2: With lang='de' filter (what Edge Function does)
-  const { data: d2, error: e2 } = await sb.from('products').select('title, lang').ilike('title', '%liquis%').eq('lang', 'de').limit(5);
-  console.log('With lang=de:', d2, e2);
+  if (products && products.length > 0) {
+    const ids = products.map(p => p.id);
 
-  // Test 3: Check what lang values exist
-  const { data: d3 } = await sb.from('products').select('lang').ilike('title', '%liquis%').limit(5);
-  console.log('Lang values:', d3);
+    // Check what section codes exist for these products
+    const { data: sections } = await sb
+      .from('sections')
+      .select('product_id, section_code, section_title, content')
+      .in('product_id', ids)
+      .eq('section_code', 'pregnancy');
 
-  // Test 4: With anon key (what the Edge Function might be using)
-  const sbAnon = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
-  const { data: d4, error: e4 } = await sbAnon.from('products').select('title').ilike('title', '%liquis%').limit(5);
-  console.log('Anon key:', d4, e4);
+    console.log(`\nPregnancy sections found: ${sections?.length || 0}`);
+    if (sections && sections.length > 0) {
+      for (const s of sections.slice(0, 2)) {
+        console.log(`  Product ${s.product_id}: "${s.section_title}" (${s.content.length} chars)`);
+        console.log(`  Preview: ${s.content.slice(0, 200)}...`);
+      }
+    }
+
+    // Show all section codes for first product
+    const { data: allSections } = await sb
+      .from('sections')
+      .select('section_code, section_title')
+      .eq('product_id', ids[0]);
+
+    console.log(`\nAll sections for ${products[0].title}:`);
+    allSections?.forEach(s => console.log(`  ${s.section_code}: ${s.section_title}`));
+  }
 }
 
 main();
