@@ -119,7 +119,7 @@ const TOOL_DEFINITIONS = [
 
 async function callGroq(messages: LLMMessage[], useTools: boolean): Promise<LLMResponse> {
   const apiKey = Deno.env.get('LLM_API_KEY');
-  const model = Deno.env.get('LLM_MODEL') || 'qwen/qwen3.6-27b';
+  const model = Deno.env.get('LLM_MODEL') || 'openai/gpt-oss-120b';
   const isQwen = model.startsWith('qwen/');
 
   const body: Record<string, unknown> = {
