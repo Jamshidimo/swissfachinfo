@@ -119,14 +119,23 @@ const TOOL_DEFINITIONS = [
 
 async function callGroq(messages: LLMMessage[], useTools: boolean): Promise<LLMResponse> {
   const apiKey = Deno.env.get('LLM_API_KEY');
-  const model = Deno.env.get('LLM_MODEL') || 'llama-3.1-70b-versatile';
+  const model = Deno.env.get('LLM_MODEL') || 'qwen/qwen3.6-27b';
+  const isQwen = model.startsWith('qwen/');
 
   const body: Record<string, unknown> = {
     model,
     messages,
     temperature: 0.1,
-    max_tokens: 4096,
+    // Qwen reasoning tokens count against the limit, so allow more room
+    max_tokens: isQwen ? 8192 : 4096,
   };
+
+  if (isQwen) {
+    // Return only the final answer, without <think> blocks in content
+    body.reasoning_format = 'hidden';
+    // 'none' = fast instruct mode, 'default' = thinking mode
+    body.reasoning_effort = Deno.env.get('LLM_REASONING_EFFORT') || 'none';
+  }
 
   if (useTools) {
     body.tools = TOOL_DEFINITIONS;
